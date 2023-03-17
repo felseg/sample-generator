@@ -22,7 +22,7 @@ from dataset.dataset import SampleDataset
 
 from audio_diffusion.models import DiffusionAttnUnet1D
 from audio_diffusion.utils import ema_update
-from viz.viz import audio_spectrogram_image
+# from viz.viz import audio_spectrogram_image
 
 
 # Define the noise schedule and sampling loop
@@ -31,15 +31,18 @@ def get_alphas_sigmas(t):
     noise (sigma), given a timestep."""
     return torch.cos(t * math.pi / 2), torch.sin(t * math.pi / 2)
 
+
 def get_crash_schedule(t):
     sigma = torch.sin(t * math.pi / 2) ** 2
     alpha = (1 - sigma ** 2) ** 0.5
     return alpha_sigma_to_t(alpha, sigma)
 
+
 def alpha_sigma_to_t(alpha, sigma):
     """Returns a timestep, given the scaling factors for the clean image and for
     the noise."""
     return torch.atan2(sigma, alpha) / math.pi * 2
+
 
 @torch.no_grad()
 def sample(model, x, steps, eta):
@@ -85,19 +88,20 @@ def sample(model, x, steps, eta):
     return pred
 
 
-
 class DiffusionUncond(pl.LightningModule):
     def __init__(self, global_args):
         super().__init__()
 
-        self.diffusion = DiffusionAttnUnet1D(global_args, io_channels=2, n_attn_layers=4)
+        self.diffusion = DiffusionAttnUnet1D(
+            global_args, io_channels=2, n_attn_layers=4)
         self.diffusion_ema = deepcopy(self.diffusion)
-        self.rng = torch.quasirandom.SobolEngine(1, scramble=True, seed=global_args.seed)
+        self.rng = torch.quasirandom.SobolEngine(
+            1, scramble=True, seed=global_args.seed)
         self.ema_decay = global_args.ema_decay
-        
+
     def configure_optimizers(self):
         return optim.Adam([*self.diffusion.parameters()], lr=4e-5)
-  
+
     def training_step(self, batch, batch_idx):
         reals = batch[0]
 
@@ -133,6 +137,7 @@ class DiffusionUncond(pl.LightningModule):
         decay = 0.95 if self.current_epoch < 25 else self.ema_decay
         ema_update(self.diffusion, self.diffusion_ema, decay)
 
+
 class ExceptionCallback(pl.Callback):
     def on_exception(self, trainer, module, err):
         print(f'{type(err).__name__}: {err}', file=sys.stderr)
@@ -150,15 +155,16 @@ class DemoCallback(pl.Callback):
 
     @rank_zero_only
     @torch.no_grad()
-    #def on_train_epoch_end(self, trainer, module):
-    def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):        
-  
+    # def on_train_epoch_end(self, trainer, module):
+    def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
+
         if (trainer.global_step - 1) % self.demo_every != 0 or self.last_demo_step == trainer.global_step:
             return
-        
+
         self.last_demo_step = trainer.global_step
-    
-        noise = torch.randn([self.num_demos, 2, self.demo_samples]).to(module.device)
+
+        noise = torch.randn(
+            [self.num_demos, 2, self.demo_samples]).to(module.device)
 
         try:
             fakes = sample(module.diffusion_ema, noise, self.demo_steps, 0)
@@ -167,21 +173,21 @@ class DemoCallback(pl.Callback):
             fakes = rearrange(fakes, 'b d n -> d (b n)')
 
             log_dict = {}
-            
+
             filename = f'demo_{trainer.global_step:08}.wav'
             fakes = fakes.clamp(-1, 1).mul(32767).to(torch.int16).cpu()
             torchaudio.save(filename, fakes, self.sample_rate)
 
-
             log_dict[f'demo'] = wandb.Audio(filename,
-                                                sample_rate=self.sample_rate,
-                                                caption=f'Demo')
-        
-            log_dict[f'demo_melspec_left'] = wandb.Image(audio_spectrogram_image(fakes))
+                                            sample_rate=self.sample_rate,
+                                            caption=f'Demo')
+
+            # log_dict[f'demo_melspec_left'] = wandb.Image(audio_spectrogram_image(fakes))
 
             trainer.logger.experiment.log(log_dict, step=trainer.global_step)
         except Exception as e:
             print(f'{type(e).__name__}: {e}', file=sys.stderr)
+
 
 def main():
 
@@ -198,10 +204,12 @@ def main():
     train_set = SampleDataset([args.training_dir], args)
     train_dl = data.DataLoader(train_set, args.batch_size, shuffle=True,
                                num_workers=args.num_workers, persistent_workers=True, pin_memory=True)
-    wandb_logger = pl.loggers.WandbLogger(project=args.name, log_model='all' if args.save_wandb=='all' else None)
+    wandb_logger = pl.loggers.WandbLogger(
+        project=args.name, log_model='all' if args.save_wandb == 'all' else None)
 
     exc_callback = ExceptionCallback()
-    ckpt_callback = pl.callbacks.ModelCheckpoint(every_n_train_steps=args.checkpoint_every, save_top_k=-1, dirpath=save_path)
+    ckpt_callback = pl.callbacks.ModelCheckpoint(
+        every_n_train_steps=args.checkpoint_every, save_top_k=-1, dirpath=save_path)
     demo_callback = DemoCallback(args)
 
     diffusion_model = DiffusionUncond(args)
@@ -215,7 +223,7 @@ def main():
         # num_nodes = args.num_nodes,
         # strategy='ddp',
         precision=16,
-        accumulate_grad_batches=args.accum_batches, 
+        accumulate_grad_batches=args.accum_batches,
         callbacks=[ckpt_callback, demo_callback, exc_callback],
         logger=wandb_logger,
         log_every_n_steps=1,
@@ -224,6 +232,6 @@ def main():
 
     diffusion_trainer.fit(diffusion_model, train_dl, ckpt_path=args.ckpt_path)
 
+
 if __name__ == '__main__':
     main()
-
